@@ -24,6 +24,39 @@ const ma = @cImport({
 // capture thread and read from the main thread.
 var g_mic_level = std.atomic.Value(f32).init(0);
 
+// A single user-selected image (closed-mouth or open-mouth) along with the
+// path it came from. We keep the path inline as a fixed-size, null-terminated
+// buffer so we can hand it straight to raylib's C API without allocating.
+const path_buf_size = 4096;
+const ImageSlot = struct {
+    tex: rl.Texture2D = .{ .id = 0, .width = 0, .height = 0, .mipmaps = 0, .format = 0 },
+    path_buf: [path_buf_size]u8 = [_]u8{0} ** path_buf_size,
+    path_len: usize = 0,
+
+    fn pathSlice(self: *const ImageSlot) []const u8 {
+        return self.path_buf[0..self.path_len];
+    }
+};
+
+/// Try to load `path` as the slot's image. On success the slot's old texture
+/// (if any) is unloaded and replaced. On failure the slot is left unchanged.
+fn slotLoadFrom(slot: *ImageSlot, path: []const u8) bool {
+    if (path.len >= slot.path_buf.len) return false;
+    // Load via a scratch buffer first so a failed load doesn't trample the
+    // slot's existing path.
+    var tmp: [path_buf_size]u8 = undefined;
+    @memcpy(tmp[0..path.len], path);
+    tmp[path.len] = 0;
+    const new_tex = rl.LoadTexture(@ptrCast(&tmp));
+    if (new_tex.id == 0) return false;
+    if (slot.tex.id != 0) rl.UnloadTexture(slot.tex);
+    slot.tex = new_tex;
+    @memcpy(slot.path_buf[0..path.len], path);
+    slot.path_buf[path.len] = 0;
+    slot.path_len = path.len;
+    return true;
+}
+
 fn captureCallback(
     device: [*c]ma.ma_device,
     output: ?*anyopaque,
@@ -94,12 +127,12 @@ pub fn main(init: std.process.Init) !void {
     // "Esc closes the window" behaviour.
     rl.SetExitKey(rl.KEY_NULL);
 
-    const tex_closed = rl.LoadTexture(closed_path);
-    defer rl.UnloadTexture(tex_closed);
-    const tex_open = rl.LoadTexture(open_path);
-    defer rl.UnloadTexture(tex_open);
+    var closed_slot: ImageSlot = .{};
+    defer if (closed_slot.tex.id != 0) rl.UnloadTexture(closed_slot.tex);
+    var open_slot: ImageSlot = .{};
+    defer if (open_slot.tex.id != 0) rl.UnloadTexture(open_slot.tex);
 
-    if (tex_closed.id == 0 or tex_open.id == 0) {
+    if (!slotLoadFrom(&closed_slot, closed_path) or !slotLoadFrom(&open_slot, open_path)) {
         std.debug.print("failed to load one of the images\n", .{});
         return error.ImageLoadFailed;
     }
@@ -133,7 +166,7 @@ pub fn main(init: std.process.Init) !void {
 
         const level = g_mic_level.load(.monotonic);
         const talking = level > threshold;
-        const tex = if (talking) tex_open else tex_closed;
+        const tex = if (talking) open_slot.tex else closed_slot.tex;
 
         rl.BeginDrawing();
         defer rl.EndDrawing();
