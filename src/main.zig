@@ -99,9 +99,8 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // CLI image paths are optional: when omitted, the settings menu lets the
-    // user pick images interactively. If they're given they form the initial
-    // state of the two slots.
+    // CLI image paths are optional now: the settings menu lets the user pick
+    // images via drag-and-drop. If they're given, they form the initial state.
     const initial_closed: ?[]const u8 = if (positionals.items.len >= 1) positionals.items[0] else null;
     const initial_open: ?[]const u8 = if (positionals.items.len >= 2) positionals.items[1] else null;
 
@@ -123,8 +122,8 @@ pub fn main(init: std.process.Init) !void {
     // "Esc closes the window" behaviour.
     rl.SetExitKey(rl.KEY_NULL);
 
-    // Slots start empty and are filled from the CLI args if provided; the
-    // user can later replace them via the settings menu.
+    // Image slots are populated from CLI args (if provided) and otherwise
+    // start empty; the user fills them in by dragging files onto the menu.
     var closed_slot: ImageSlot = .{};
     defer if (closed_slot.tex.id != 0) rl.UnloadTexture(closed_slot.tex);
     var open_slot: ImageSlot = .{};
@@ -161,17 +160,46 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // ---- main loop ----
-    var menu_open = false;
+    // Auto-open the menu on first launch when either image is missing, so the
+    // user immediately sees the drop targets instead of a blank window.
+    var menu_open = closed_slot.tex.id == 0 or open_slot.tex.id == 0;
     while (!rl.WindowShouldClose()) {
         // Esc toggles the settings menu. We intercept it before raylib's
         // default "Esc closes the window" behaviour by clearing the exit key
         // once, below.
         if (rl.IsKeyPressed(rl.KEY_ESCAPE)) menu_open = !menu_open;
 
+        // Drag-and-drop: if any files were dropped this frame and the menu is
+        // open, use the cursor position to figure out which slot to assign
+        // the first dropped path to. Slot rectangles are published by
+        // `drawSettingsMenu` the previous frame.
+        if (rl.IsFileDropped()) {
+            const files = rl.LoadDroppedFiles();
+            defer rl.UnloadDroppedFiles(files);
+            if (menu_open and files.count > 0) {
+                const mouse_pos = rl.GetMousePosition();
+                var hit_idx: ?usize = null;
+                for (menu_state.slot_rects, 0..) |rect, i| {
+                    if (rl.CheckCollisionPointRec(mouse_pos, rect)) {
+                        hit_idx = i;
+                        break;
+                    }
+                }
+                if (hit_idx) |i| {
+                    const c_path: [*:0]const u8 = @ptrCast(files.paths[0]);
+                    const path = std.mem.sliceTo(c_path, 0);
+                    const slot = if (i == 0) &closed_slot else &open_slot;
+                    if (!slotLoadFrom(slot, path)) {
+                        std.debug.print("failed to load image: {s}\n", .{path});
+                    }
+                }
+            }
+        }
+
         const level = g_mic_level.load(.monotonic);
         const talking = level > threshold;
         // Pick the slot for this frame; if it's empty, fall back to the other
-        // so we still show something once at least one image is set.
+        // one so we still show *something* once at least one image is set.
         const primary = if (talking) &open_slot else &closed_slot;
         const fallback = if (talking) &closed_slot else &open_slot;
         const draw_tex: ?rl.Texture2D = if (primary.tex.id != 0)
@@ -207,7 +235,7 @@ pub fn main(init: std.process.Init) !void {
             rl.DrawRectangle(tx, 16, 2, 18, rl.RED);
         }
 
-        if (menu_open) drawSettingsMenu(sw, sh, &threshold, &show_debug);
+        if (menu_open) drawSettingsMenu(sw, sh, &threshold, &show_debug, &closed_slot, &open_slot);
     }
 }
 
@@ -217,12 +245,26 @@ pub fn main(init: std.process.Init) !void {
 const MenuState = struct {
     /// True while the user is dragging the sensitivity slider's handle.
     dragging_sensitivity: bool = false,
+    /// Rectangles of the two image-slot drop targets, in screen space.
+    /// Published by `drawSettingsMenu` each frame and read by the drop
+    /// handler in `main`. Zero-sized when the menu isn't drawn.
+    slot_rects: [2]rl.Rectangle = .{
+        .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+        .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+    },
 };
 var menu_state: MenuState = .{};
 
 /// Draws the settings menu as a centred panel with a translucent dim behind
 /// it. Mutates `threshold` if the user interacts with the sensitivity slider.
-fn drawSettingsMenu(sw: f32, sh: f32, threshold: *f32, show_debug: *bool) void {
+fn drawSettingsMenu(
+    sw: f32,
+    sh: f32,
+    threshold: *f32,
+    show_debug: *bool,
+    closed_slot: *const ImageSlot,
+    open_slot: *const ImageSlot,
+) void {
     // Dim the scene behind the panel.
     rl.DrawRectangle(
         0,
@@ -233,9 +275,10 @@ fn drawSettingsMenu(sw: f32, sh: f32, threshold: *f32, show_debug: *bool) void {
     );
 
     // Panel sized to a fraction of the window, clamped so it stays readable
-    // on small windows and doesn't sprawl on big ones.
-    const pw = std.math.clamp(sw * 0.6, 320, 640);
-    const ph = std.math.clamp(sh * 0.6, 240, 480);
+    // on small windows and doesn't sprawl on big ones. Minimum height is set
+    // so the two image-slot rows always fit comfortably.
+    const pw = std.math.clamp(sw * 0.6, 360, 640);
+    const ph = std.math.clamp(sh * 0.7, 380, 560);
     const px = (sw - pw) * 0.5;
     const py = (sh - ph) * 0.5;
 
@@ -382,6 +425,88 @@ fn drawSettingsMenu(sw: f32, sh: f32, threshold: *f32, show_debug: *bool) void {
         cb_size,
         rl.RAYWHITE,
     );
+
+    // ---- Image slots (drag & drop) ----
+    const slot_h: f32 = 64;
+    const slot_gap: f32 = 8;
+    const slots_y = cb_y + box_side + 20;
+    var i_slot: usize = 0;
+    while (i_slot < 2) : (i_slot += 1) {
+        const slot: *const ImageSlot = if (i_slot == 0) closed_slot else open_slot;
+        const slot_label: [:0]const u8 = if (i_slot == 0) "Closed image" else "Open image";
+        const row = rl.Rectangle{
+            .x = px + margin,
+            .y = slots_y + (slot_h + slot_gap) * @as(f32, @floatFromInt(i_slot)),
+            .width = pw - margin * 2,
+            .height = slot_h,
+        };
+        menu_state.slot_rects[i_slot] = row;
+
+        // Highlight on hover so it's obvious this is a drop target.
+        const hover = rl.CheckCollisionPointRec(mouse, row);
+        const bg: rl.Color = if (hover)
+            .{ .r = 55, .g = 60, .b = 75, .a = 255 }
+        else
+            .{ .r = 45, .g = 48, .b = 55, .a = 255 };
+        rl.DrawRectangleRec(row, bg);
+        rl.DrawRectangleLinesEx(row, 1, if (hover) rl.SKYBLUE else rl.GRAY);
+
+        // Left side: kind label + current filename (or placeholder).
+        rl.DrawText(
+            slot_label.ptr,
+            @intFromFloat(row.x + 10),
+            @intFromFloat(row.y + 8),
+            14,
+            rl.LIGHTGRAY,
+        );
+        if (slot.path_len == 0) {
+            rl.DrawText(
+                "drag an image here",
+                @intFromFloat(row.x + 10),
+                @intFromFloat(row.y + 30),
+                16,
+                rl.GRAY,
+            );
+        } else {
+            // basename isn't null-terminated, so copy it into a scratch buf
+            // before handing to raylib's C-string text API.
+            const base = std.fs.path.basename(slot.pathSlice());
+            var name_buf: [256]u8 = undefined;
+            const n = @min(base.len, name_buf.len - 1);
+            @memcpy(name_buf[0..n], base[0..n]);
+            name_buf[n] = 0;
+            rl.DrawText(
+                @ptrCast(&name_buf),
+                @intFromFloat(row.x + 10),
+                @intFromFloat(row.y + 30),
+                16,
+                rl.RAYWHITE,
+            );
+        }
+
+        // Right side: small aspect-preserving thumbnail when an image is set.
+        if (slot.tex.id != 0) {
+            const thumb_h: f32 = slot_h - 12;
+            const tw_f: f32 = @floatFromInt(slot.tex.width);
+            const th_f: f32 = @floatFromInt(slot.tex.height);
+            const tscale = thumb_h / th_f;
+            const tdw = tw_f * tscale;
+            const thumb_dst = rl.Rectangle{
+                .x = row.x + row.width - tdw - 6,
+                .y = row.y + 6,
+                .width = tdw,
+                .height = thumb_h,
+            };
+            rl.DrawTexturePro(
+                slot.tex,
+                .{ .x = 0, .y = 0, .width = tw_f, .height = th_f },
+                thumb_dst,
+                .{ .x = 0, .y = 0 },
+                0,
+                rl.WHITE,
+            );
+        }
+    }
 
     const close_hint = "Esc to close";
     const close_size: i32 = 16;
