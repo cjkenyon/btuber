@@ -56,19 +56,29 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
 
-    if (args.len < 3) {
+    var positionals = try std.ArrayList([:0]const u8).initCapacity(arena, args.len);
+    var show_debug = false;
+    for (args[1..]) |a| {
+        if (std.mem.eql(u8, a, "--debug") or std.mem.eql(u8, a, "-d")) {
+            show_debug = true;
+        } else {
+            try positionals.append(arena, a);
+        }
+    }
+
+    if (positionals.items.len < 2) {
         std.debug.print(
-            "usage: {s} <closed.png> <open.png> [threshold=0.05]\n",
+            "usage: {s} [--debug] <closed.png> <open.png> [threshold=0.05]\n",
             .{args[0]},
         );
         return error.MissingArguments;
     }
-    const closed_path = try arena.dupeZ(u8, args[1]);
-    const open_path = try arena.dupeZ(u8, args[2]);
+    const closed_path = try arena.dupeZ(u8, positionals.items[0]);
+    const open_path = try arena.dupeZ(u8, positionals.items[1]);
 
     var threshold: f32 = 0.05;
-    if (args.len >= 4) {
-        threshold = std.fmt.parseFloat(f32, args[3]) catch threshold;
+    if (positionals.items.len >= 3) {
+        threshold = std.fmt.parseFloat(f32, positionals.items[2]) catch threshold;
     }
 
     // ---- raylib window + textures ----
@@ -130,11 +140,13 @@ pub fn main(init: std.process.Init) !void {
         const dst = rl.Rectangle{ .x = dx, .y = dy, .width = dw, .height = dh };
         rl.DrawTexturePro(tex, src, dst, .{ .x = 0, .y = 0 }, 0, rl.WHITE);
 
-        // Little debug bar showing mic level vs. threshold.
-        const bar_w = sw - 40;
-        rl.DrawRectangle(20, 20, @intFromFloat(bar_w), 10, rl.LIGHTGRAY);
-        rl.DrawRectangle(20, 20, @intFromFloat(bar_w * @min(level, 1.0)), 10, rl.DARKGREEN);
-        const tx: i32 = @intFromFloat(20 + bar_w * @min(threshold, 1.0));
-        rl.DrawRectangle(tx, 16, 2, 18, rl.RED);
+        if (show_debug) {
+            // Little debug bar showing mic level vs. threshold.
+            const bar_w = sw - 40;
+            rl.DrawRectangle(20, 20, @intFromFloat(bar_w), 10, rl.LIGHTGRAY);
+            rl.DrawRectangle(20, 20, @intFromFloat(bar_w * @min(level, 1.0)), 10, rl.DARKGREEN);
+            const tx: i32 = @intFromFloat(20 + bar_w * @min(threshold, 1.0));
+            rl.DrawRectangle(tx, 16, 2, 18, rl.RED);
+        }
     }
 }
