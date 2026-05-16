@@ -3,39 +3,7 @@ const std = @import("std");
 const rl = @import("c.zig").rl;
 const audio = @import("audio.zig");
 const config = @import("config.zig");
-
-// A single user-selected image (closed-mouth or open-mouth) along with the
-// path it came from. We keep the path inline as a fixed-size, null-terminated
-// buffer so we can hand it straight to raylib's C API without allocating.
-const path_buf_size = 4096;
-const ImageSlot = struct {
-    tex: rl.Texture2D = .{ .id = 0, .width = 0, .height = 0, .mipmaps = 0, .format = 0 },
-    path_buf: [path_buf_size]u8 = [_]u8{0} ** path_buf_size,
-    path_len: usize = 0,
-
-    fn pathSlice(self: *const ImageSlot) []const u8 {
-        return self.path_buf[0..self.path_len];
-    }
-};
-
-/// Try to load `path` as the slot's image. On success the slot's old texture
-/// (if any) is unloaded and replaced. On failure the slot is left unchanged.
-fn slotLoadFrom(slot: *ImageSlot, path: []const u8) bool {
-    if (path.len >= slot.path_buf.len) return false;
-    // Load via a scratch buffer first so a failed load doesn't trample the
-    // slot's existing path.
-    var tmp: [path_buf_size]u8 = undefined;
-    @memcpy(tmp[0..path.len], path);
-    tmp[path.len] = 0;
-    const new_tex = rl.LoadTexture(@ptrCast(&tmp));
-    if (new_tex.id == 0) return false;
-    if (slot.tex.id != 0) rl.UnloadTexture(slot.tex);
-    slot.tex = new_tex;
-    @memcpy(slot.path_buf[0..path.len], path);
-    slot.path_buf[path.len] = 0;
-    slot.path_len = path.len;
-    return true;
-}
+const ImageSlot = @import("image.zig").ImageSlot;
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -86,17 +54,17 @@ pub fn main(init: std.process.Init) !void {
     // Image slots are populated from CLI args (if provided) and otherwise
     // start empty; the user fills them in by dragging files onto the menu.
     var closed_slot: ImageSlot = .{};
-    defer if (closed_slot.tex.id != 0) rl.UnloadTexture(closed_slot.tex);
+    defer closed_slot.unload();
     var open_slot: ImageSlot = .{};
-    defer if (open_slot.tex.id != 0) rl.UnloadTexture(open_slot.tex);
+    defer open_slot.unload();
 
     if (initial_closed) |p| {
-        if (!slotLoadFrom(&closed_slot, p)) {
+        if (!closed_slot.loadFrom(p)) {
             std.debug.print("failed to load closed image: {s}\n", .{p});
         }
     }
     if (initial_open) |p| {
-        if (!slotLoadFrom(&open_slot, p)) {
+        if (!open_slot.loadFrom(p)) {
             std.debug.print("failed to load open image: {s}\n", .{p});
         }
     }
@@ -130,7 +98,7 @@ pub fn main(init: std.process.Init) !void {
     // ---- main loop ----
     // Auto-open the menu on first launch when either image is missing, so the
     // user immediately sees the drop targets instead of a blank window.
-    var menu_open = closed_slot.tex.id == 0 or open_slot.tex.id == 0;
+    var menu_open = !closed_slot.hasTexture() or !open_slot.hasTexture();
     while (!rl.WindowShouldClose()) {
         // Esc toggles the settings menu. We intercept it before raylib's
         // default "Esc closes the window" behaviour by clearing the exit key
@@ -157,7 +125,7 @@ pub fn main(init: std.process.Init) !void {
                     const c_path: [*:0]const u8 = @ptrCast(files.paths[0]);
                     const path = std.mem.sliceTo(c_path, 0);
                     const slot = if (i == 0) &closed_slot else &open_slot;
-                    if (!slotLoadFrom(slot, path)) {
+                    if (!slot.loadFrom(path)) {
                         std.debug.print("failed to load image: {s}\n", .{path});
                     }
                 }
@@ -170,9 +138,9 @@ pub fn main(init: std.process.Init) !void {
         // one so we still show *something* once at least one image is set.
         const primary = if (talking) &open_slot else &closed_slot;
         const fallback = if (talking) &closed_slot else &open_slot;
-        const draw_tex: ?rl.Texture2D = if (primary.tex.id != 0)
+        const draw_tex: ?rl.Texture2D = if (primary.hasTexture())
             primary.tex
-        else if (fallback.tex.id != 0) fallback.tex else null;
+        else if (fallback.hasTexture()) fallback.tex else null;
 
         rl.BeginDrawing();
         defer rl.EndDrawing();
