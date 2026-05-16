@@ -9,6 +9,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const raylib_artifact = raylib_dep.artifact("raylib");
+    // Path to bundled miniaudio.h (used directly for microphone capture).
+    const miniaudio_inc = raylib_dep.path("src/external");
 
     const mod = b.addModule("btuber", .{
         .root_source_file = b.path("src/root.zig"),
@@ -24,6 +26,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     exe_mod.linkLibrary(raylib_artifact);
+    exe_mod.addIncludePath(miniaudio_inc);
 
     const exe = b.addExecutable(.{
         .name = "btuber",
