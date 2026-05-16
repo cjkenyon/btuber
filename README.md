@@ -1,8 +1,8 @@
 # btuber
 
-A tiny PNGtuber-style avatar. Point it at two images — one with your mouth
+The btuber (budget vtuber) is a teeny tiny vtuber. Point it at two images — one the avatar's mouth
 closed, one with it open — and it swaps between them whenever your mic picks
-up your voice.
+up your voice. That's it.
 
 ## Install
 
