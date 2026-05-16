@@ -98,7 +98,10 @@ pub fn main(init: std.process.Init) !void {
     // user immediately sees the drop targets instead of a blank window.
     var menu_open = !closed_slot.hasTexture() or !open_slot.hasTexture();
     while (!rl.WindowShouldClose()) {
-        if (rl.IsKeyPressed(rl.KEY_ESCAPE)) menu_open = !menu_open;
+        // Esc toggles the menu, except when the menu itself is consuming
+        // keyboard input (e.g. the user is typing into a text field); in
+        // that case Esc is the cancel key for the field instead.
+        if (rl.IsKeyPressed(rl.KEY_ESCAPE) and !menu.wantsKeyboard()) menu_open = !menu_open;
 
         // Drag-and-drop: if any files were dropped this frame and the menu is
         // open, route the first dropped path to whichever slot the cursor is

@@ -40,6 +40,16 @@ pub fn drawDebugBar(sw: f32, level: f32, threshold: f32) void {
 pub const Menu = struct {
     /// True while the user is dragging the sensitivity slider's handle.
     dragging_sensitivity: bool = false,
+    /// True while the user is typing into the sensitivity readout.
+    /// While set, the readout becomes a text input and `edit_buf[0..edit_len]`
+    /// is the in-progress text; the underlying threshold isn't updated until
+    /// the edit is committed (Enter or click-outside).
+    editing_sensitivity: bool = false,
+    /// Scratch storage for the in-progress text. 16 bytes comfortably fits
+    /// any reasonable 0..1 decimal value plus a few extra digits the user
+    /// might type before committing.
+    edit_buf: [16]u8 = undefined,
+    edit_len: usize = 0,
     /// Rectangles of the two image-slot drop targets, in screen space.
     /// Set by `draw` and read by `slotAtPoint`. Zero-sized before the first
     /// draw or while the menu is closed.
@@ -55,6 +65,13 @@ pub const Menu = struct {
             if (rl.CheckCollisionPointRec(point, rect)) return i;
         }
         return null;
+    }
+
+    /// True when the menu is currently consuming keyboard input (e.g. the
+    /// user is typing into the sensitivity readout). Callers should suppress
+    /// their own global keybindings (notably Esc-to-toggle) while this is set.
+    pub fn wantsKeyboard(self: *const Menu) bool {
+        return self.editing_sensitivity;
     }
 
     /// Draws the settings menu as a centred panel with a translucent dim
@@ -147,17 +164,9 @@ fn drawSensitivity(
         rl.RAYWHITE,
     );
 
-    // Numeric readout right-aligned on the same row.
-    var val_buf: [16]u8 = undefined;
-    const val_text = std.fmt.bufPrintZ(&val_buf, "{d:.3}", .{threshold.*}) catch "?";
-    const val_w = rl.MeasureText(val_text.ptr, label_size);
-    rl.DrawText(
-        val_text.ptr,
-        @intFromFloat(px + pw - margin - @as(f32, @floatFromInt(val_w))),
-        @intFromFloat(label_y),
-        label_size,
-        rl.LIGHTGRAY,
-    );
+    // Numeric readout right-aligned on the same row. Doubles as a text
+    // input: click it to type a value directly.
+    const input_rect = drawSensitivityInput(menu, px, pw, margin, label_y, label_size, threshold, mouse);
 
     // Track is a thin rounded rectangle; handle is a filled circle on top.
     // Slider value maps the full 0..1 range, matching the debug bar's scale.
@@ -182,7 +191,8 @@ fn drawSensitivity(
         .width = track.width + handle_r * 2,
         .height = track.height + handle_r * 2,
     };
-    if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and rl.CheckCollisionPointRec(mouse, hit)) {
+    const click_in_input = rl.CheckCollisionPointRec(mouse, input_rect);
+    if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and !click_in_input and rl.CheckCollisionPointRec(mouse, hit)) {
         menu.dragging_sensitivity = true;
     }
     if (!rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
@@ -215,6 +225,118 @@ fn drawSensitivity(
     );
 
     return py + 150;
+}
+
+/// Numeric readout / text input for the sensitivity threshold. Returns the
+/// rectangle it occupied so the slider hit-test can ignore clicks landing on
+/// the input. Mutates `threshold` when an edit is committed (Enter or
+/// click-outside); cancels on Escape without touching `threshold`.
+fn drawSensitivityInput(
+    menu: *Menu,
+    px: f32,
+    pw: f32,
+    margin: f32,
+    label_y: f32,
+    label_size: i32,
+    threshold: *f32,
+    mouse: rl.Vector2,
+) rl.Rectangle {
+    // Text shown in the input: either the in-progress edit buffer or a
+    // formatted snapshot of the current threshold.
+    var snap_buf: [16]u8 = undefined;
+    const text: [:0]const u8 = if (menu.editing_sensitivity) blk: {
+        menu.edit_buf[menu.edit_len] = 0;
+        break :blk menu.edit_buf[0..menu.edit_len :0];
+    } else std.fmt.bufPrintZ(&snap_buf, "{d:.3}", .{threshold.*}) catch "?";
+
+    // Size the input box around the widest of the current text or a typical
+    // "0.000" so it doesn't jitter on every keystroke.
+    const sample_w = rl.MeasureText("0.000", label_size);
+    const text_w = rl.MeasureText(text.ptr, label_size);
+    const inner_w: f32 = @floatFromInt(@max(sample_w, text_w));
+    const pad_x: f32 = 6;
+    const pad_y: f32 = 3;
+    const box_h = @as(f32, @floatFromInt(label_size)) + pad_y * 2;
+    const box = rl.Rectangle{
+        .x = px + pw - margin - inner_w - pad_x * 2,
+        .y = label_y - pad_y,
+        .width = inner_w + pad_x * 2,
+        .height = box_h,
+    };
+
+    // ---- mouse handling ----
+    const hovering = rl.CheckCollisionPointRec(mouse, box);
+    if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) {
+        if (hovering and !menu.editing_sensitivity) {
+            // Enter edit mode, seeding the buffer with the current value.
+            var seed_buf: [16]u8 = undefined;
+            const seed = std.fmt.bufPrint(&seed_buf, "{d:.3}", .{threshold.*}) catch "";
+            const n = @min(seed.len, menu.edit_buf.len - 1);
+            @memcpy(menu.edit_buf[0..n], seed[0..n]);
+            menu.edit_len = n;
+            menu.editing_sensitivity = true;
+        } else if (!hovering and menu.editing_sensitivity) {
+            commitSensitivityEdit(menu, threshold);
+        }
+    }
+
+    // ---- keyboard handling (only while editing) ----
+    if (menu.editing_sensitivity) {
+        // Accept characters: digits and at most one '.'. Reject anything else.
+        while (true) {
+            const ch = rl.GetCharPressed();
+            if (ch == 0) break;
+            if (menu.edit_len >= menu.edit_buf.len - 1) continue;
+            const c: u8 = @intCast(ch);
+            const is_digit = c >= '0' and c <= '9';
+            const is_dot = c == '.' and std.mem.indexOfScalar(u8, menu.edit_buf[0..menu.edit_len], '.') == null;
+            if (is_digit or is_dot) {
+                menu.edit_buf[menu.edit_len] = c;
+                menu.edit_len += 1;
+            }
+        }
+        if (rl.IsKeyPressed(rl.KEY_BACKSPACE) and menu.edit_len > 0) {
+            menu.edit_len -= 1;
+        }
+        if (rl.IsKeyPressed(rl.KEY_ENTER) or rl.IsKeyPressed(rl.KEY_KP_ENTER)) {
+            commitSensitivityEdit(menu, threshold);
+        } else if (rl.IsKeyPressed(rl.KEY_ESCAPE)) {
+            // Cancel: drop the buffer without writing back.
+            menu.editing_sensitivity = false;
+            menu.edit_len = 0;
+        }
+    }
+
+    // ---- draw ----
+    if (menu.editing_sensitivity) {
+        rl.DrawRectangleRec(box, .{ .r = 50, .g = 50, .b = 58, .a = 255 });
+        rl.DrawRectangleLinesEx(box, 1, rl.SKYBLUE);
+    } else if (hovering) {
+        rl.DrawRectangleLinesEx(box, 1, rl.GRAY);
+    }
+    const text_color: rl.Color = if (menu.editing_sensitivity) rl.RAYWHITE else rl.LIGHTGRAY;
+    // Right-align inside the box.
+    const text_x = box.x + box.width - pad_x - @as(f32, @floatFromInt(text_w));
+    rl.DrawText(text.ptr, @intFromFloat(text_x), @intFromFloat(label_y), label_size, text_color);
+    // Blinking caret while editing: ~2 Hz toggle.
+    if (menu.editing_sensitivity and @mod(rl.GetTime(), 1.0) < 0.5) {
+        const caret_x: i32 = @intFromFloat(text_x + @as(f32, @floatFromInt(text_w)) + 1);
+        rl.DrawRectangle(caret_x, @intFromFloat(label_y), 1, label_size, rl.RAYWHITE);
+    }
+
+    return box;
+}
+
+/// Parse the in-progress edit buffer, clamp to 0..1, write to `threshold`,
+/// and leave edit mode. An unparseable buffer just cancels.
+fn commitSensitivityEdit(menu: *Menu, threshold: *f32) void {
+    if (menu.edit_len > 0) {
+        if (std.fmt.parseFloat(f32, menu.edit_buf[0..menu.edit_len])) |v| {
+            threshold.* = std.math.clamp(v, 0, 1);
+        } else |_| {}
+    }
+    menu.editing_sensitivity = false;
+    menu.edit_len = 0;
 }
 
 /// Debug-meter toggle. Click anywhere along the label row, not just on the
