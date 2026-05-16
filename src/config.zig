@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const path_buf_size = 4096;
+const path_buf_size = std.Io.Dir.max_path_bytes;
 
 /// Persisted user settings. Paths point into the arena (or are null if not
 /// set yet). Defaults match the previous hard-coded values.

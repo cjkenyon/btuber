@@ -3,9 +3,11 @@
 //! null-terminated buffer so we can hand it straight to raylib's C API
 //! without allocating.
 
+const std = @import("std");
+
 const rl = @import("c.zig").rl;
 
-pub const path_buf_size = 4096;
+const path_buf_size = std.Io.Dir.max_path_bytes;
 
 pub const ImageSlot = struct {
     tex: rl.Texture2D = .{ .id = 0, .width = 0, .height = 0, .mipmaps = 0, .format = 0 },
