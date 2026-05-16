@@ -1,26 +1,7 @@
 const std = @import("std");
 
 const rl = @import("c.zig").rl;
-
-// We only need miniaudio's declarations; the implementation is statically
-// linked into the raylib artifact via raudio.c. Keep the MA_NO_* defines in
-// sync with raudio.c so the public declarations we see match the ABI of the
-// compiled library.
-const ma = @cImport({
-    @cDefine("MA_NO_JACK", "");
-    @cDefine("MA_NO_WAV", "");
-    @cDefine("MA_NO_FLAC", "");
-    @cDefine("MA_NO_MP3", "");
-    @cDefine("MA_NO_RESOURCE_MANAGER", "");
-    @cDefine("MA_NO_NODE_GRAPH", "");
-    @cDefine("MA_NO_ENGINE", "");
-    @cDefine("MA_NO_GENERATION", "");
-    @cInclude("miniaudio.h");
-});
-
-// Shared microphone level (0..1, smoothed RMS), updated from the audio
-// capture thread and read from the main thread.
-var g_mic_level = std.atomic.Value(f32).init(0);
+const audio = @import("audio.zig");
 
 // A single user-selected image (closed-mouth or open-mouth) along with the
 // path it came from. We keep the path inline as a fixed-size, null-terminated
@@ -53,34 +34,6 @@ fn slotLoadFrom(slot: *ImageSlot, path: []const u8) bool {
     slot.path_buf[path.len] = 0;
     slot.path_len = path.len;
     return true;
-}
-
-fn captureCallback(
-    device: [*c]ma.ma_device,
-    output: ?*anyopaque,
-    input: ?*const anyopaque,
-    frame_count: ma.ma_uint32,
-) callconv(.c) void {
-    _ = output;
-    const channels: usize = device.*.capture.channels;
-    const samples: [*]const f32 = @ptrCast(@alignCast(input.?));
-    const total = @as(usize, frame_count) * channels;
-
-    if (total == 0) return;
-
-    var sum_sq: f64 = 0;
-    var i: usize = 0;
-    while (i < total) : (i += 1) {
-        const s: f64 = samples[i];
-        sum_sq += s * s;
-    }
-    const rms: f32 = @floatCast(@sqrt(sum_sq / @as(f64, @floatFromInt(total))));
-
-    // Simple exponential smoothing against the previous value so the image
-    // doesn't strobe on every single buffer.
-    const prev = g_mic_level.load(.monotonic);
-    const smoothed = prev * 0.6 + rms * 0.4;
-    g_mic_level.store(smoothed, .monotonic);
 }
 
 /// Persisted user settings. Paths point into the arena (or are null if not
@@ -208,24 +161,20 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // ---- miniaudio capture ----
-    var device_config = ma.ma_device_config_init(ma.ma_device_type_capture);
-    device_config.capture.format = ma.ma_format_f32;
-    device_config.capture.channels = 1;
-    device_config.sampleRate = 44100;
-    device_config.dataCallback = captureCallback;
-
-    var device: ma.ma_device = undefined;
-    if (ma.ma_device_init(null, &device_config, &device) != ma.MA_SUCCESS) {
-        std.debug.print("failed to init capture device\n", .{});
-        return error.AudioInitFailed;
-    }
-    defer ma.ma_device_uninit(&device);
-
-    if (ma.ma_device_start(&device) != ma.MA_SUCCESS) {
-        std.debug.print("failed to start capture device\n", .{});
-        return error.AudioStartFailed;
-    }
+    // ---- microphone capture ----
+    // miniaudio keeps internal pointers into `ma_device`, so `capture` must
+    // live at a stable address; declaring it here and initialising in place
+    // keeps it pinned to this stack frame for the lifetime of the program.
+    var capture: audio.Capture = undefined;
+    capture.init() catch |err| {
+        std.debug.print("failed to init capture device: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer capture.deinit();
+    capture.start() catch |err| {
+        std.debug.print("failed to start capture device: {s}\n", .{@errorName(err)});
+        return err;
+    };
 
     // Persist settings on exit, into a file alongside the process's current
     // working directory.
@@ -275,7 +224,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        const level = g_mic_level.load(.monotonic);
+        const level = capture.level();
         const talking = level > threshold;
         // Pick the slot for this frame; if it's empty, fall back to the other
         // one so we still show *something* once at least one image is set.
@@ -314,7 +263,7 @@ pub fn main(init: std.process.Init) !void {
             rl.DrawRectangle(tx, 16, 2, 18, rl.RED);
         }
 
-        if (menu_open) drawSettingsMenu(sw, sh, &threshold, &show_debug, &closed_slot, &open_slot);
+        if (menu_open) drawSettingsMenu(sw, sh, level, &threshold, &show_debug, &closed_slot, &open_slot);
     }
 }
 
@@ -339,6 +288,7 @@ var menu_state: MenuState = .{};
 fn drawSettingsMenu(
     sw: f32,
     sh: f32,
+    live_level: f32,
     threshold: *f32,
     show_debug: *bool,
     closed_slot: *const ImageSlot,
@@ -449,7 +399,7 @@ fn drawSettingsMenu(
         .height = 4,
     };
     rl.DrawRectangleRec(meter, .{ .r = 60, .g = 60, .b = 70, .a = 255 });
-    const live = std.math.clamp(g_mic_level.load(.monotonic), 0, 1);
+    const live = std.math.clamp(live_level, 0, 1);
     rl.DrawRectangle(
         @intFromFloat(meter.x),
         @intFromFloat(meter.y),
