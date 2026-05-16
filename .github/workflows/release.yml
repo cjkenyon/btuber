@@ -20,22 +20,18 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-x86_64
-            target: x86_64-linux-gnu
             archive_ext: tar.gz
             bin: btuber
           - os: macos-latest
             name: macos-aarch64
-            target: aarch64-macos
             archive_ext: tar.gz
             bin: btuber
           - os: macos-13
             name: macos-x86_64
-            target: x86_64-macos
             archive_ext: tar.gz
             bin: btuber
           - os: windows-latest
             name: windows-x86_64
-            target: x86_64-windows
             archive_ext: zip
             bin: btuber.exe
 
@@ -69,7 +65,7 @@ jobs:
 
       - name: Build
         shell: bash
-        run: zig build -Doptimize=ReleaseFast "-Dtarget=${{ matrix.target }}" "-Dversion=${{ steps.version.outputs.tag }}"
+        run: zig build -Doptimize=ReleaseFast "-Dversion=${{ steps.version.outputs.tag }}"
 
       - name: Stage release files
         shell: bash
