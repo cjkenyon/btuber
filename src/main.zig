@@ -1,8 +1,6 @@
 const std = @import("std");
 
-const rl = @cImport({
-    @cInclude("raylib.h");
-});
+const rl = @import("c.zig").rl;
 
 // We only need miniaudio's declarations; the implementation is statically
 // linked into the raylib artifact via raudio.c. Keep the MA_NO_* defines in
