@@ -17,7 +17,7 @@ no images are set yet.
 - **Drag and drop** a PNG/JPG onto either slot ("Closed image" / "Open image").
 - Adjust the **microphone sensitivity** slider until the green meter crosses
   the slider handle when you talk and stays below it when you're quiet.
-  (You can also click the number to type a value directly.)
+  (Insert the number directly to fine tune it.)
 - Pick a **background color** from the swatches. White is the default;
   green/blue/magenta are there for chroma-keying in OBS etc.
 - Press **Esc** to close the menu. Press Esc again any time to reopen it.
