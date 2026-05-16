@@ -162,7 +162,7 @@ pub fn main(init: std.process.Init) !void {
             rl.DrawRectangle(tx, 16, 2, 18, rl.RED);
         }
 
-        if (menu_open) drawSettingsMenu(sw, sh, &threshold);
+        if (menu_open) drawSettingsMenu(sw, sh, &threshold, &show_debug);
     }
 }
 
@@ -177,7 +177,7 @@ var menu_state: MenuState = .{};
 
 /// Draws the settings menu as a centred panel with a translucent dim behind
 /// it. Mutates `threshold` if the user interacts with the sensitivity slider.
-fn drawSettingsMenu(sw: f32, sh: f32, threshold: *f32) void {
+fn drawSettingsMenu(sw: f32, sh: f32, threshold: *f32, show_debug: *bool) void {
     // Dim the scene behind the panel.
     rl.DrawRectangle(
         0,
@@ -289,6 +289,53 @@ fn drawSettingsMenu(sw: f32, sh: f32, threshold: *f32) void {
         @intFromFloat(meter.width * live),
         @intFromFloat(meter.height),
         rl.DARKGREEN,
+    );
+
+    // ---- Debug voice meter checkbox ----
+    const cb_label = "Show debug voice meter";
+    const cb_size: i32 = 18;
+    const cb_y = py + 150;
+    const box_side: f32 = 20;
+    const box = rl.Rectangle{
+        .x = px + margin,
+        .y = cb_y,
+        .width = box_side,
+        .height = box_side,
+    };
+
+    // Toggle on click anywhere along the label row (box + text), so the hit
+    // target isn't a tiny 20px square.
+    const cb_label_w = rl.MeasureText(cb_label, cb_size);
+    const cb_hit = rl.Rectangle{
+        .x = box.x,
+        .y = box.y,
+        .width = box_side + 10 + @as(f32, @floatFromInt(cb_label_w)),
+        .height = box_side,
+    };
+    if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and rl.CheckCollisionPointRec(mouse, cb_hit)) {
+        show_debug.* = !show_debug.*;
+    }
+
+    rl.DrawRectangleRec(box, .{ .r = 50, .g = 50, .b = 58, .a = 255 });
+    rl.DrawRectangleLinesEx(box, 2, rl.LIGHTGRAY);
+    if (show_debug.*) {
+        // Inset filled square as the "check" mark. Keeps us from needing a
+        // glyph font for a tick character.
+        const inset: f32 = 5;
+        rl.DrawRectangle(
+            @intFromFloat(box.x + inset),
+            @intFromFloat(box.y + inset),
+            @intFromFloat(box_side - inset * 2),
+            @intFromFloat(box_side - inset * 2),
+            rl.SKYBLUE,
+        );
+    }
+    rl.DrawText(
+        cb_label,
+        @intFromFloat(box.x + box_side + 10),
+        @intFromFloat(box.y + (box_side - @as(f32, @floatFromInt(cb_size))) * 0.5),
+        cb_size,
+        rl.RAYWHITE,
     );
 
     const close_hint = "Esc to close";
