@@ -68,7 +68,7 @@ jobs:
           fi
 
       - name: Build
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} -Dversion=${{ steps.version.outputs.tag }}
 
       - name: Stage release files
         shell: bash
