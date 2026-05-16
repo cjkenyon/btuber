@@ -99,15 +99,11 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    if (positionals.items.len < 2) {
-        std.debug.print(
-            "usage: {s} [--debug] <closed.png> <open.png> [threshold=0.05]\n",
-            .{args[0]},
-        );
-        return error.MissingArguments;
-    }
-    const closed_path = try arena.dupeZ(u8, positionals.items[0]);
-    const open_path = try arena.dupeZ(u8, positionals.items[1]);
+    // CLI image paths are optional: when omitted, the settings menu lets the
+    // user pick images interactively. If they're given they form the initial
+    // state of the two slots.
+    const initial_closed: ?[]const u8 = if (positionals.items.len >= 1) positionals.items[0] else null;
+    const initial_open: ?[]const u8 = if (positionals.items.len >= 2) positionals.items[1] else null;
 
     var threshold: f32 = 0.05;
     if (positionals.items.len >= 3) {
@@ -127,14 +123,22 @@ pub fn main(init: std.process.Init) !void {
     // "Esc closes the window" behaviour.
     rl.SetExitKey(rl.KEY_NULL);
 
+    // Slots start empty and are filled from the CLI args if provided; the
+    // user can later replace them via the settings menu.
     var closed_slot: ImageSlot = .{};
     defer if (closed_slot.tex.id != 0) rl.UnloadTexture(closed_slot.tex);
     var open_slot: ImageSlot = .{};
     defer if (open_slot.tex.id != 0) rl.UnloadTexture(open_slot.tex);
 
-    if (!slotLoadFrom(&closed_slot, closed_path) or !slotLoadFrom(&open_slot, open_path)) {
-        std.debug.print("failed to load one of the images\n", .{});
-        return error.ImageLoadFailed;
+    if (initial_closed) |p| {
+        if (!slotLoadFrom(&closed_slot, p)) {
+            std.debug.print("failed to load closed image: {s}\n", .{p});
+        }
+    }
+    if (initial_open) |p| {
+        if (!slotLoadFrom(&open_slot, p)) {
+            std.debug.print("failed to load open image: {s}\n", .{p});
+        }
     }
 
     // ---- miniaudio capture ----
@@ -166,7 +170,13 @@ pub fn main(init: std.process.Init) !void {
 
         const level = g_mic_level.load(.monotonic);
         const talking = level > threshold;
-        const tex = if (talking) open_slot.tex else closed_slot.tex;
+        // Pick the slot for this frame; if it's empty, fall back to the other
+        // so we still show something once at least one image is set.
+        const primary = if (talking) &open_slot else &closed_slot;
+        const fallback = if (talking) &closed_slot else &open_slot;
+        const draw_tex: ?rl.Texture2D = if (primary.tex.id != 0)
+            primary.tex
+        else if (fallback.tex.id != 0) fallback.tex else null;
 
         rl.BeginDrawing();
         defer rl.EndDrawing();
@@ -174,17 +184,19 @@ pub fn main(init: std.process.Init) !void {
 
         const sw: f32 = @floatFromInt(rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(rl.GetScreenHeight());
-        const tw: f32 = @floatFromInt(tex.width);
-        const th: f32 = @floatFromInt(tex.height);
-        const scale = @min(sw / tw, sh / th);
-        const dw = tw * scale;
-        const dh = th * scale;
-        const dx = (sw - dw) * 0.5;
-        const dy = (sh - dh) * 0.5;
+        if (draw_tex) |tex| {
+            const tw: f32 = @floatFromInt(tex.width);
+            const th: f32 = @floatFromInt(tex.height);
+            const scale = @min(sw / tw, sh / th);
+            const dw = tw * scale;
+            const dh = th * scale;
+            const dx = (sw - dw) * 0.5;
+            const dy = (sh - dh) * 0.5;
 
-        const src = rl.Rectangle{ .x = 0, .y = 0, .width = tw, .height = th };
-        const dst = rl.Rectangle{ .x = dx, .y = dy, .width = dw, .height = dh };
-        rl.DrawTexturePro(tex, src, dst, .{ .x = 0, .y = 0 }, 0, rl.WHITE);
+            const src = rl.Rectangle{ .x = 0, .y = 0, .width = tw, .height = th };
+            const dst = rl.Rectangle{ .x = dx, .y = dy, .width = dw, .height = dh };
+            rl.DrawTexturePro(tex, src, dst, .{ .x = 0, .y = 0 }, 0, rl.WHITE);
+        }
 
         if (show_debug) {
             // Little debug bar showing mic level vs. threshold.
