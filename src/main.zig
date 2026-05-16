@@ -85,29 +85,99 @@ fn captureCallback(
     g_mic_level.store(smoothed, .monotonic);
 }
 
+/// Persisted user settings. Paths point into the arena (or are null if not
+/// set yet). Defaults match the previous hard-coded values.
+const Config = struct {
+    threshold: f32 = 0.05,
+    show_debug: bool = false,
+    closed_path: ?[]const u8 = null,
+    open_path: ?[]const u8 = null,
+};
+
+/// Settings file name, resolved relative to the process's current working
+/// directory (i.e. wherever the app was launched from).
+const config_file_name = "btuber.ini";
+
+/// Parse a simple `key=value` settings file. Missing/corrupt file -> defaults.
+fn loadConfig(allocator: std.mem.Allocator, io: std.Io, path: []const u8) Config {
+    var cfg: Config = .{};
+    const data = std.Io.Dir.cwd().readFileAlloc(
+        io,
+        path,
+        allocator,
+        std.Io.Limit.limited(16 * 1024),
+    ) catch return cfg;
+    var it = std.mem.splitScalar(u8, data, '\n');
+    while (it.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        const val = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (std.mem.eql(u8, key, "threshold")) {
+            cfg.threshold = std.fmt.parseFloat(f32, val) catch cfg.threshold;
+        } else if (std.mem.eql(u8, key, "show_debug")) {
+            cfg.show_debug = std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true");
+        } else if (std.mem.eql(u8, key, "closed")) {
+            if (val.len > 0) cfg.closed_path = allocator.dupe(u8, val) catch null;
+        } else if (std.mem.eql(u8, key, "open")) {
+            if (val.len > 0) cfg.open_path = allocator.dupe(u8, val) catch null;
+        }
+    }
+    return cfg;
+}
+
+/// Write current settings. Best-effort: any I/O error is silently dropped so
+/// shutdown can't fail because of disk problems.
+fn saveConfig(
+    io: std.Io,
+    path: []const u8,
+    threshold: f32,
+    show_debug: bool,
+    closed_path: []const u8,
+    open_path: []const u8,
+) void {
+    var buf: [path_buf_size * 2 + 256]u8 = undefined;
+    const data = std.fmt.bufPrint(
+        &buf,
+        "threshold={d:.6}\nshow_debug={d}\nclosed={s}\nopen={s}\n",
+        .{ threshold, @intFromBool(show_debug), closed_path, open_path },
+    ) catch return;
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch return;
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
 
     var positionals = try std.ArrayList([:0]const u8).initCapacity(arena, args.len);
-    var show_debug = false;
+    var show_debug_cli: ?bool = null;
     for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "--debug") or std.mem.eql(u8, a, "-d")) {
-            show_debug = true;
+            show_debug_cli = true;
         } else {
             try positionals.append(arena, a);
         }
     }
 
-    // CLI image paths are optional now: the settings menu lets the user pick
-    // images via drag-and-drop. If they're given, they form the initial state.
-    const initial_closed: ?[]const u8 = if (positionals.items.len >= 1) positionals.items[0] else null;
-    const initial_open: ?[]const u8 = if (positionals.items.len >= 2) positionals.items[1] else null;
+    // Load persisted settings first; CLI args (if any) override them for this
+    // run and will then be saved back on exit.
+    const cfg: Config = loadConfig(arena, init.io, config_file_name);
 
-    var threshold: f32 = 0.05;
+    const initial_closed: ?[]const u8 = if (positionals.items.len >= 1)
+        positionals.items[0]
+    else
+        cfg.closed_path;
+    const initial_open: ?[]const u8 = if (positionals.items.len >= 2)
+        positionals.items[1]
+    else
+        cfg.open_path;
+
+    var threshold: f32 = cfg.threshold;
     if (positionals.items.len >= 3) {
         threshold = std.fmt.parseFloat(f32, positionals.items[2]) catch threshold;
     }
+    var show_debug = show_debug_cli orelse cfg.show_debug;
 
     // Mutable so the settings menu's slider can write to it. The capture
     // callback only reads it indirectly via the main thread comparing against
@@ -158,6 +228,17 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("failed to start capture device\n", .{});
         return error.AudioStartFailed;
     }
+
+    // Persist settings on exit, into a file alongside the process's current
+    // working directory.
+    defer saveConfig(
+        init.io,
+        config_file_name,
+        threshold,
+        show_debug,
+        closed_slot.pathSlice(),
+        open_slot.pathSlice(),
+    );
 
     // ---- main loop ----
     // Auto-open the menu on first launch when either image is missing, so the
