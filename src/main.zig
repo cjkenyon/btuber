@@ -38,6 +38,7 @@ pub fn main(init: std.process.Init) !void {
         threshold = std.fmt.parseFloat(f32, positionals.items[2]) catch threshold;
     }
     var show_debug = show_debug_cli orelse cfg.show_debug;
+    var bg_color: rl.Color = .{ .r = cfg.bg_r, .g = cfg.bg_g, .b = cfg.bg_b, .a = 255 };
 
     // ---- raylib window + textures ----
     rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE);
@@ -90,6 +91,9 @@ pub fn main(init: std.process.Init) !void {
         show_debug,
         closed_slot.pathSlice(),
         open_slot.pathSlice(),
+        bg_color.r,
+        bg_color.g,
+        bg_color.b,
     );
 
     // ---- main loop ----
@@ -133,12 +137,12 @@ pub fn main(init: std.process.Init) !void {
 
         rl.BeginDrawing();
         defer rl.EndDrawing();
-        rl.ClearBackground(rl.RAYWHITE);
+        rl.ClearBackground(bg_color);
 
         const sw: f32 = @floatFromInt(rl.GetScreenWidth());
         const sh: f32 = @floatFromInt(rl.GetScreenHeight());
         if (draw_tex) |tex| ui.drawAvatar(sw, sh, tex);
         if (show_debug) ui.drawDebugBar(sw, level, threshold);
-        if (menu_open) menu.draw(sw, sh, level, &threshold, &show_debug, &closed_slot, &open_slot);
+        if (menu_open) menu.draw(sw, sh, level, &threshold, &show_debug, &bg_color, &closed_slot, &open_slot);
     }
 }

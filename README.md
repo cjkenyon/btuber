@@ -18,10 +18,13 @@ no images are set yet.
 - Adjust the **microphone sensitivity** slider until the green meter crosses
   the slider handle when you talk and stays below it when you're quiet.
   (You can also click the number to type a value directly.)
+- Pick a **background color** from the swatches. White is the default;
+  green/blue/magenta are there for chroma-keying in OBS etc.
 - Press **Esc** to close the menu. Press Esc again any time to reopen it.
 
-Your images, threshold, and debug setting are saved to `btuber.ini` next to
-wherever you launched btuber from, so they'll be there next time.
+Your images, threshold, background color, and debug setting are saved to
+`btuber.ini` next to wherever you launched btuber from, so they'll be there
+next time.
 
 ### Tips
 
@@ -29,8 +32,9 @@ wherever you launched btuber from, so they'll be there next time.
 - Toggle **Show debug voice meter** to get a thin bar at the top of the
   window showing your live mic level (green) vs. the threshold (red tick).
   Handy while tuning sensitivity.
-- For use in OBS / Discord / etc., capture the btuber window and chroma-key
-  out the white background, or use a window-capture with transparency.
+- For use in OBS / Discord / etc., set the background to one of the chroma
+  swatches (green/blue/magenta) and chroma-key it out in your capture
+  software.
 
 ## Command line (optional)
 

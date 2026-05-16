@@ -85,6 +85,7 @@ pub const Menu = struct {
         live_level: f32,
         threshold: *f32,
         show_debug: *bool,
+        bg_color: *rl.Color,
         closed_slot: *const ImageSlot,
         open_slot: *const ImageSlot,
     ) void {
@@ -125,7 +126,9 @@ pub const Menu = struct {
 
         const cb_y = drawSensitivity(self, px, py, pw, margin, live_level, threshold, mouse);
         drawDebugCheckbox(px, cb_y, margin, show_debug, mouse);
-        drawImageSlots(self, px, pw, cb_y, margin, closed_slot, open_slot, mouse);
+        const bg_y = cb_y + 40;
+        const slots_y = drawBackgroundPicker(px, pw, bg_y, margin, bg_color, mouse);
+        drawImageSlots(self, px, pw, slots_y, margin, closed_slot, open_slot, mouse);
 
         const close_hint = "Esc to close";
         const close_size: i32 = 16;
@@ -409,6 +412,59 @@ fn drawDebugCheckbox(
     );
 }
 
+/// Background color picker: a row of preset swatches the user can click to
+/// change the window's clear color. Returns the y at which the following
+/// widget row should start.
+fn drawBackgroundPicker(
+    px: f32,
+    pw: f32,
+    y: f32,
+    margin: f32,
+    bg_color: *rl.Color,
+    mouse: rl.Vector2,
+) f32 {
+    const label = "Background";
+    const label_size: i32 = 18;
+    rl.DrawText(
+        label,
+        @intFromFloat(px + margin),
+        @intFromFloat(y),
+        label_size,
+        rl.RAYWHITE,
+    );
+
+    // Common picks: default white, black, plus three chroma-friendly colors.
+    const presets = [_]rl.Color{
+        .{ .r = 245, .g = 245, .b = 245, .a = 255 }, // RAYWHITE
+        .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+        .{ .r = 0, .g = 177, .b = 64, .a = 255 }, // chroma green
+        .{ .r = 0, .g = 71, .b = 187, .a = 255 }, // chroma blue
+        .{ .r = 255, .g = 0, .b = 255, .a = 255 }, // magenta
+    };
+
+    const sw_size: f32 = 24;
+    const sw_gap: f32 = 8;
+    const row_w = sw_size * presets.len + sw_gap * (presets.len - 1);
+    const start_x = px + pw - margin - row_w;
+    const sw_y = y - 3;
+
+    for (presets, 0..) |c, i| {
+        const sx = start_x + (sw_size + sw_gap) * @as(f32, @floatFromInt(i));
+        const rect = rl.Rectangle{ .x = sx, .y = sw_y, .width = sw_size, .height = sw_size };
+        rl.DrawRectangleRec(rect, c);
+        const selected = c.r == bg_color.r and c.g == bg_color.g and c.b == bg_color.b;
+        const hover = rl.CheckCollisionPointRec(mouse, rect);
+        const border: rl.Color = if (selected) rl.SKYBLUE else if (hover) rl.RAYWHITE else rl.GRAY;
+        const thickness: f32 = if (selected) 2 else 1;
+        rl.DrawRectangleLinesEx(rect, thickness, border);
+        if (hover and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) {
+            bg_color.* = c;
+        }
+    }
+
+    return y + sw_size + 16;
+}
+
 /// Two stacked drop-target rows for the closed/open avatar images. Publishes
 /// the rectangles into `menu.slot_rects` so the drop dispatcher in `main`
 /// can hit-test them on the following frame.
@@ -416,16 +472,14 @@ fn drawImageSlots(
     menu: *Menu,
     px: f32,
     pw: f32,
-    cb_y: f32,
+    slots_y: f32,
     margin: f32,
     closed_slot: *const ImageSlot,
     open_slot: *const ImageSlot,
     mouse: rl.Vector2,
 ) void {
-    const box_side: f32 = 20;
     const slot_h: f32 = 64;
     const slot_gap: f32 = 8;
-    const slots_y = cb_y + box_side + 20;
     var i_slot: usize = 0;
     while (i_slot < 2) : (i_slot += 1) {
         const slot: *const ImageSlot = if (i_slot == 0) closed_slot else open_slot;

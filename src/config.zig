@@ -9,6 +9,10 @@ pub const Config = struct {
     show_debug: bool = false,
     closed_path: ?[]const u8 = null,
     open_path: ?[]const u8 = null,
+    /// Background clear color. Defaults to raylib's RAYWHITE.
+    bg_r: u8 = 245,
+    bg_g: u8 = 245,
+    bg_b: u8 = 245,
 };
 
 /// Settings file name, resolved relative to the process's current working
@@ -39,6 +43,19 @@ pub fn loadConfig(allocator: std.mem.Allocator, io: std.Io, path: []const u8) Co
             if (val.len > 0) cfg.closed_path = allocator.dupe(u8, val) catch null;
         } else if (std.mem.eql(u8, key, "open")) {
             if (val.len > 0) cfg.open_path = allocator.dupe(u8, val) catch null;
+        } else if (std.mem.eql(u8, key, "bg_color")) {
+            // Format: "r,g,b" with each component 0..255. Silently keep
+            // defaults on any parse failure.
+            var parts = std.mem.splitScalar(u8, val, ',');
+            const rs = parts.next() orelse continue;
+            const gs = parts.next() orelse continue;
+            const bs = parts.next() orelse continue;
+            const r = std.fmt.parseInt(u8, std.mem.trim(u8, rs, " \t"), 10) catch continue;
+            const g = std.fmt.parseInt(u8, std.mem.trim(u8, gs, " \t"), 10) catch continue;
+            const b = std.fmt.parseInt(u8, std.mem.trim(u8, bs, " \t"), 10) catch continue;
+            cfg.bg_r = r;
+            cfg.bg_g = g;
+            cfg.bg_b = b;
         }
     }
     return cfg;
@@ -53,12 +70,15 @@ pub fn saveConfig(
     show_debug: bool,
     closed_path: []const u8,
     open_path: []const u8,
+    bg_r: u8,
+    bg_g: u8,
+    bg_b: u8,
 ) void {
     var buf: [path_buf_size * 2 + 256]u8 = undefined;
     const data = std.fmt.bufPrint(
         &buf,
-        "threshold={d:.6}\nshow_debug={d}\nclosed={s}\nopen={s}\n",
-        .{ threshold, @intFromBool(show_debug), closed_path, open_path },
+        "threshold={d:.6}\nshow_debug={d}\nclosed={s}\nopen={s}\nbg_color={d},{d},{d}\n",
+        .{ threshold, @intFromBool(show_debug), closed_path, open_path, bg_r, bg_g, bg_b },
     ) catch return;
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch return;
 }
