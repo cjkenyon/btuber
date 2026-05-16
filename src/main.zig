@@ -2,6 +2,7 @@ const std = @import("std");
 
 const rl = @import("c.zig").rl;
 const audio = @import("audio.zig");
+const config = @import("config.zig");
 
 // A single user-selected image (closed-mouth or open-mouth) along with the
 // path it came from. We keep the path inline as a fixed-size, null-terminated
@@ -36,67 +37,6 @@ fn slotLoadFrom(slot: *ImageSlot, path: []const u8) bool {
     return true;
 }
 
-/// Persisted user settings. Paths point into the arena (or are null if not
-/// set yet). Defaults match the previous hard-coded values.
-const Config = struct {
-    threshold: f32 = 0.05,
-    show_debug: bool = false,
-    closed_path: ?[]const u8 = null,
-    open_path: ?[]const u8 = null,
-};
-
-/// Settings file name, resolved relative to the process's current working
-/// directory (i.e. wherever the app was launched from).
-const config_file_name = "btuber.ini";
-
-/// Parse a simple `key=value` settings file. Missing/corrupt file -> defaults.
-fn loadConfig(allocator: std.mem.Allocator, io: std.Io, path: []const u8) Config {
-    var cfg: Config = .{};
-    const data = std.Io.Dir.cwd().readFileAlloc(
-        io,
-        path,
-        allocator,
-        std.Io.Limit.limited(16 * 1024),
-    ) catch return cfg;
-    var it = std.mem.splitScalar(u8, data, '\n');
-    while (it.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const key = std.mem.trim(u8, line[0..eq], " \t");
-        const val = std.mem.trim(u8, line[eq + 1 ..], " \t");
-        if (std.mem.eql(u8, key, "threshold")) {
-            cfg.threshold = std.fmt.parseFloat(f32, val) catch cfg.threshold;
-        } else if (std.mem.eql(u8, key, "show_debug")) {
-            cfg.show_debug = std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true");
-        } else if (std.mem.eql(u8, key, "closed")) {
-            if (val.len > 0) cfg.closed_path = allocator.dupe(u8, val) catch null;
-        } else if (std.mem.eql(u8, key, "open")) {
-            if (val.len > 0) cfg.open_path = allocator.dupe(u8, val) catch null;
-        }
-    }
-    return cfg;
-}
-
-/// Write current settings. Best-effort: any I/O error is silently dropped so
-/// shutdown can't fail because of disk problems.
-fn saveConfig(
-    io: std.Io,
-    path: []const u8,
-    threshold: f32,
-    show_debug: bool,
-    closed_path: []const u8,
-    open_path: []const u8,
-) void {
-    var buf: [path_buf_size * 2 + 256]u8 = undefined;
-    const data = std.fmt.bufPrint(
-        &buf,
-        "threshold={d:.6}\nshow_debug={d}\nclosed={s}\nopen={s}\n",
-        .{ threshold, @intFromBool(show_debug), closed_path, open_path },
-    ) catch return;
-    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch return;
-}
-
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
@@ -113,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Load persisted settings first; CLI args (if any) override them for this
     // run and will then be saved back on exit.
-    const cfg: Config = loadConfig(arena, init.io, config_file_name);
+    const cfg: config.Config = config.loadConfig(arena, init.io, config.config_file_name);
 
     const initial_closed: ?[]const u8 = if (positionals.items.len >= 1)
         positionals.items[0]
@@ -178,9 +118,9 @@ pub fn main(init: std.process.Init) !void {
 
     // Persist settings on exit, into a file alongside the process's current
     // working directory.
-    defer saveConfig(
+    defer config.saveConfig(
         init.io,
-        config_file_name,
+        config.config_file_name,
         threshold,
         show_debug,
         closed_slot.pathSlice(),
