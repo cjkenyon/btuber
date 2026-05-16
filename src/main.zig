@@ -81,6 +81,10 @@ pub fn main(init: std.process.Init) !void {
         threshold = std.fmt.parseFloat(f32, positionals.items[2]) catch threshold;
     }
 
+    // Mutable so the settings menu's slider can write to it. The capture
+    // callback only reads it indirectly via the main thread comparing against
+    // `g_mic_level`, so no atomics are needed.
+
     // ---- raylib window + textures ----
     rl.SetConfigFlags(rl.FLAG_WINDOW_RESIZABLE);
     rl.InitWindow(800, 600, "btuber");
@@ -158,13 +162,22 @@ pub fn main(init: std.process.Init) !void {
             rl.DrawRectangle(tx, 16, 2, 18, rl.RED);
         }
 
-        if (menu_open) drawSettingsMenu(sw, sh);
+        if (menu_open) drawSettingsMenu(sw, sh, &threshold);
     }
 }
 
-/// Draws the (currently empty) settings menu as a centred panel with a
-/// translucent dim behind it. Actual settings widgets get added later.
-fn drawSettingsMenu(sw: f32, sh: f32) void {
+/// Persistent UI state for the settings menu. Lives at module scope because
+/// the menu is drawn from a free function and we want drag state to survive
+/// across frames without plumbing a struct through.
+const MenuState = struct {
+    /// True while the user is dragging the sensitivity slider's handle.
+    dragging_sensitivity: bool = false,
+};
+var menu_state: MenuState = .{};
+
+/// Draws the settings menu as a centred panel with a translucent dim behind
+/// it. Mutates `threshold` if the user interacts with the sensitivity slider.
+fn drawSettingsMenu(sw: f32, sh: f32, threshold: *f32) void {
     // Dim the scene behind the panel.
     rl.DrawRectangle(
         0,
@@ -196,15 +209,86 @@ fn drawSettingsMenu(sw: f32, sh: f32) void {
         rl.RAYWHITE,
     );
 
-    const hint = "(nothing here yet)";
-    const hint_size: i32 = 18;
-    const hint_w = rl.MeasureText(hint, hint_size);
+    // ---- Microphone sensitivity slider ----
+    // Label + slider laid out with a small horizontal margin inside the panel.
+    const margin: f32 = 24;
+    const label = "Microphone sensitivity";
+    const label_size: i32 = 18;
+    const label_y = py + 70;
     rl.DrawText(
-        hint,
-        @intFromFloat(px + (pw - @as(f32, @floatFromInt(hint_w))) * 0.5),
-        @intFromFloat(py + ph * 0.5 - @as(f32, @floatFromInt(hint_size)) * 0.5),
-        hint_size,
-        rl.GRAY,
+        label,
+        @intFromFloat(px + margin),
+        @intFromFloat(label_y),
+        label_size,
+        rl.RAYWHITE,
+    );
+
+    // Numeric readout right-aligned on the same row.
+    var val_buf: [16]u8 = undefined;
+    const val_text = std.fmt.bufPrintZ(&val_buf, "{d:.3}", .{threshold.*}) catch "?";
+    const val_w = rl.MeasureText(val_text.ptr, label_size);
+    rl.DrawText(
+        val_text.ptr,
+        @intFromFloat(px + pw - margin - @as(f32, @floatFromInt(val_w))),
+        @intFromFloat(label_y),
+        label_size,
+        rl.LIGHTGRAY,
+    );
+
+    // Track is a thin rounded rectangle; handle is a filled circle on top.
+    // Slider value maps the full 0..1 range, matching the debug bar's scale.
+    const track = rl.Rectangle{
+        .x = px + margin,
+        .y = label_y + 34,
+        .width = pw - margin * 2,
+        .height = 6,
+    };
+    rl.DrawRectangleRec(track, rl.DARKGRAY);
+
+    const t = std.math.clamp(threshold.*, 0, 1);
+    const handle_x = track.x + track.width * t;
+    const handle_y = track.y + track.height * 0.5;
+    const handle_r: f32 = 10;
+
+    // Hit area is generously taller than the track itself so the slider is
+    // easy to grab without pixel-hunting.
+    const hit = rl.Rectangle{
+        .x = track.x - handle_r,
+        .y = track.y - handle_r,
+        .width = track.width + handle_r * 2,
+        .height = track.height + handle_r * 2,
+    };
+    const mouse = rl.GetMousePosition();
+    if (rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and rl.CheckCollisionPointRec(mouse, hit)) {
+        menu_state.dragging_sensitivity = true;
+    }
+    if (!rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT)) {
+        menu_state.dragging_sensitivity = false;
+    }
+    if (menu_state.dragging_sensitivity) {
+        const nt = (mouse.x - track.x) / track.width;
+        threshold.* = std.math.clamp(nt, 0, 1);
+    }
+
+    const handle_color: rl.Color = if (menu_state.dragging_sensitivity) rl.SKYBLUE else rl.RAYWHITE;
+    rl.DrawCircleV(.{ .x = handle_x, .y = handle_y }, handle_r, handle_color);
+
+    // Tiny live mic-level indicator under the track so the user can see what
+    // their current threshold is being compared against while adjusting.
+    const meter = rl.Rectangle{
+        .x = track.x,
+        .y = track.y + 18,
+        .width = track.width,
+        .height = 4,
+    };
+    rl.DrawRectangleRec(meter, .{ .r = 60, .g = 60, .b = 70, .a = 255 });
+    const live = std.math.clamp(g_mic_level.load(.monotonic), 0, 1);
+    rl.DrawRectangle(
+        @intFromFloat(meter.x),
+        @intFromFloat(meter.y),
+        @intFromFloat(meter.width * live),
+        @intFromFloat(meter.height),
+        rl.DARKGREEN,
     );
 
     const close_hint = "Esc to close";
