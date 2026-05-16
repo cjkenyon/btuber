@@ -86,6 +86,9 @@ pub fn main(init: std.process.Init) !void {
     rl.InitWindow(800, 600, "btuber");
     defer rl.CloseWindow();
     rl.SetTargetFPS(60);
+    // We use Esc to toggle the settings menu, so disable raylib's default
+    // "Esc closes the window" behaviour.
+    rl.SetExitKey(rl.KEY_NULL);
 
     const tex_closed = rl.LoadTexture(closed_path);
     defer rl.UnloadTexture(tex_closed);
@@ -117,7 +120,13 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // ---- main loop ----
+    var menu_open = false;
     while (!rl.WindowShouldClose()) {
+        // Esc toggles the settings menu. We intercept it before raylib's
+        // default "Esc closes the window" behaviour by clearing the exit key
+        // once, below.
+        if (rl.IsKeyPressed(rl.KEY_ESCAPE)) menu_open = !menu_open;
+
         const level = g_mic_level.load(.monotonic);
         const talking = level > threshold;
         const tex = if (talking) tex_open else tex_closed;
@@ -148,5 +157,64 @@ pub fn main(init: std.process.Init) !void {
             const tx: i32 = @intFromFloat(20 + bar_w * @min(threshold, 1.0));
             rl.DrawRectangle(tx, 16, 2, 18, rl.RED);
         }
+
+        if (menu_open) drawSettingsMenu(sw, sh);
     }
+}
+
+/// Draws the (currently empty) settings menu as a centred panel with a
+/// translucent dim behind it. Actual settings widgets get added later.
+fn drawSettingsMenu(sw: f32, sh: f32) void {
+    // Dim the scene behind the panel.
+    rl.DrawRectangle(
+        0,
+        0,
+        @intFromFloat(sw),
+        @intFromFloat(sh),
+        .{ .r = 0, .g = 0, .b = 0, .a = 160 },
+    );
+
+    // Panel sized to a fraction of the window, clamped so it stays readable
+    // on small windows and doesn't sprawl on big ones.
+    const pw = std.math.clamp(sw * 0.6, 320, 640);
+    const ph = std.math.clamp(sh * 0.6, 240, 480);
+    const px = (sw - pw) * 0.5;
+    const py = (sh - ph) * 0.5;
+
+    const panel = rl.Rectangle{ .x = px, .y = py, .width = pw, .height = ph };
+    rl.DrawRectangleRec(panel, .{ .r = 30, .g = 30, .b = 36, .a = 240 });
+    rl.DrawRectangleLinesEx(panel, 2, rl.LIGHTGRAY);
+
+    const title = "Settings";
+    const title_size: i32 = 28;
+    const title_w = rl.MeasureText(title, title_size);
+    rl.DrawText(
+        title,
+        @intFromFloat(px + (pw - @as(f32, @floatFromInt(title_w))) * 0.5),
+        @intFromFloat(py + 20),
+        title_size,
+        rl.RAYWHITE,
+    );
+
+    const hint = "(nothing here yet)";
+    const hint_size: i32 = 18;
+    const hint_w = rl.MeasureText(hint, hint_size);
+    rl.DrawText(
+        hint,
+        @intFromFloat(px + (pw - @as(f32, @floatFromInt(hint_w))) * 0.5),
+        @intFromFloat(py + ph * 0.5 - @as(f32, @floatFromInt(hint_size)) * 0.5),
+        hint_size,
+        rl.GRAY,
+    );
+
+    const close_hint = "Esc to close";
+    const close_size: i32 = 16;
+    const close_w = rl.MeasureText(close_hint, close_size);
+    rl.DrawText(
+        close_hint,
+        @intFromFloat(px + (pw - @as(f32, @floatFromInt(close_w))) * 0.5),
+        @intFromFloat(py + ph - 30),
+        close_size,
+        rl.LIGHTGRAY,
+    );
 }
