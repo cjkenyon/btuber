@@ -9,6 +9,7 @@ const std = @import("std");
 
 const rl = @import("c.zig").rl;
 const ImageSlot = @import("image.zig").ImageSlot;
+const build_options = @import("build_options");
 
 /// Draw `tex` centred in a `sw` x `sh` viewport, preserving aspect ratio.
 pub fn drawAvatar(sw: f32, sh: f32, tex: rl.Texture2D) void {
@@ -135,6 +136,22 @@ pub const Menu = struct {
             @intFromFloat(py + ph - 30),
             close_size,
             rl.LIGHTGRAY,
+        );
+
+        // Version string, tucked into the bottom-right of the panel so the
+        // user can tell which build they're running. Buffered into a
+        // null-terminated stack array since raylib wants a C string and the
+        // build_options slice isn't sentinel-terminated.
+        var version_buf: [128]u8 = undefined;
+        const version = std.fmt.bufPrintZ(&version_buf, "v{s}", .{build_options.version}) catch "v?";
+        const version_size: i32 = 12;
+        const version_w = rl.MeasureText(version.ptr, version_size);
+        rl.DrawText(
+            version.ptr,
+            @intFromFloat(px + pw - @as(f32, @floatFromInt(version_w)) - 10),
+            @intFromFloat(py + ph - 18),
+            version_size,
+            rl.GRAY,
         );
     }
 };
