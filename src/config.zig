@@ -6,6 +6,9 @@ const path_buf_size = std.Io.Dir.max_path_bytes;
 /// set yet). Defaults match the previous hard-coded values.
 pub const Config = struct {
     threshold: f32 = 0.05,
+    /// Normalization divisor from the most recent mic calibration. 1.0 means
+    /// "never calibrated, treat the raw RMS as-is".
+    calibration_ref: f32 = 1.0,
     show_debug: bool = false,
     closed_path: ?[]const u8 = null,
     open_path: ?[]const u8 = null,
@@ -37,6 +40,8 @@ pub fn loadConfig(allocator: std.mem.Allocator, io: std.Io, path: []const u8) Co
         const val = std.mem.trim(u8, line[eq + 1 ..], " \t");
         if (std.mem.eql(u8, key, "threshold")) {
             cfg.threshold = std.fmt.parseFloat(f32, val) catch cfg.threshold;
+        } else if (std.mem.eql(u8, key, "calibration_ref")) {
+            cfg.calibration_ref = std.fmt.parseFloat(f32, val) catch cfg.calibration_ref;
         } else if (std.mem.eql(u8, key, "show_debug")) {
             cfg.show_debug = std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true");
         } else if (std.mem.eql(u8, key, "closed")) {
@@ -67,6 +72,7 @@ pub fn saveConfig(
     io: std.Io,
     path: []const u8,
     threshold: f32,
+    calibration_ref: f32,
     show_debug: bool,
     closed_path: []const u8,
     open_path: []const u8,
@@ -77,8 +83,8 @@ pub fn saveConfig(
     var buf: [path_buf_size * 2 + 256]u8 = undefined;
     const data = std.fmt.bufPrint(
         &buf,
-        "threshold={d:.6}\nshow_debug={d}\nclosed={s}\nopen={s}\nbg_color={d},{d},{d}\n",
-        .{ threshold, @intFromBool(show_debug), closed_path, open_path, bg_r, bg_g, bg_b },
+        "threshold={d:.6}\ncalibration_ref={d:.6}\nshow_debug={d}\nclosed={s}\nopen={s}\nbg_color={d},{d},{d}\n",
+        .{ threshold, calibration_ref, @intFromBool(show_debug), closed_path, open_path, bg_r, bg_g, bg_b },
     ) catch return;
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch return;
 }
