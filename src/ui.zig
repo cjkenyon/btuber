@@ -9,7 +9,12 @@ const std = @import("std");
 
 const rl = @import("c.zig").rl;
 const ImageSlot = @import("image.zig").ImageSlot;
+const Capture = @import("audio.zig").Capture;
 const build_options = @import("build_options");
+
+/// How long the calibration window stays open, in seconds. Long enough for
+/// the user to say a typical sentence at their natural speaking volume.
+const calibration_seconds: f64 = 3.0;
 
 /// Draw `tex` centred in a `sw` x `sh` viewport, preserving aspect ratio.
 pub fn drawAvatar(sw: f32, sh: f32, tex: rl.Texture2D) void {
@@ -58,6 +63,10 @@ pub const Menu = struct {
         .{ .x = 0, .y = 0, .width = 0, .height = 0 },
         .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     },
+    /// `rl.GetTime()` when the current calibration window started, or null
+    /// if no calibration is in progress. The window auto-ends after
+    /// `calibration_seconds`.
+    calibration_start: ?f64 = null,
 
     /// Returns the slot index (0 = closed, 1 = open) whose drop target
     /// contains `point`, based on the last `draw` call. Null if none.
@@ -88,6 +97,7 @@ pub const Menu = struct {
         bg_color: *rl.Color,
         closed_slot: *const ImageSlot,
         open_slot: *const ImageSlot,
+        capture: *Capture,
     ) void {
         // Dim the scene behind the panel.
         rl.DrawRectangle(
@@ -102,7 +112,7 @@ pub const Menu = struct {
         // readable on small windows and doesn't sprawl on big ones. Minimum
         // height is set so the two image-slot rows always fit comfortably.
         const pw = std.math.clamp(sw * 0.6, 360, 640);
-        const ph = std.math.clamp(sh * 0.7, 380, 560);
+        const ph = std.math.clamp(sh * 0.7, 420, 600);
         const px = (sw - pw) * 0.5;
         const py = (sh - ph) * 0.5;
 
@@ -124,7 +134,8 @@ pub const Menu = struct {
         const mouse = rl.GetMousePosition();
         const margin: f32 = 24;
 
-        const cb_y = drawSensitivity(self, px, py, pw, margin, live_level, threshold, mouse);
+        const cal_y = drawSensitivity(self, px, py, pw, margin, live_level, threshold, mouse);
+        const cb_y = drawCalibration(self, px, cal_y, margin, capture, mouse);
         drawDebugCheckbox(px, cb_y, margin, show_debug, mouse);
         const bg_y = cb_y + 40;
         const slots_y = drawBackgroundPicker(px, pw, bg_y, margin, bg_color, mouse);
@@ -357,6 +368,110 @@ fn commitSensitivityEdit(menu: *Menu, threshold: *f32) void {
     }
     menu.editing_sensitivity = false;
     menu.edit_len = 0;
+}
+
+/// Calibration button + status text. While calibration is running, the
+/// button becomes a "Stop" affordance and shows a countdown plus a live
+/// raw-peak readout so the user can tell their voice is being picked up.
+/// Returns the y of the next widget row.
+fn drawCalibration(
+    menu: *Menu,
+    px: f32,
+    y: f32,
+    margin: f32,
+    capture: *Capture,
+    mouse: rl.Vector2,
+) f32 {
+    const btn_h: f32 = 28;
+    const btn_w: f32 = 140;
+    const btn = rl.Rectangle{
+        .x = px + margin,
+        .y = y,
+        .width = btn_w,
+        .height = btn_h,
+    };
+
+    const calibrating = capture.isCalibrating();
+    // Drive the countdown / auto-stop. We track start time in the menu so
+    // the audio module stays UI-agnostic.
+    if (calibrating) {
+        if (menu.calibration_start) |start| {
+            if (rl.GetTime() - start >= calibration_seconds) {
+                _ = capture.endCalibration();
+                menu.calibration_start = null;
+            }
+        } else {
+            // Audio thread thinks we're calibrating but the menu doesn't have
+            // a start time (shouldn't normally happen). Stamp it now so the
+            // window still ends.
+            menu.calibration_start = rl.GetTime();
+        }
+    }
+
+    const hover = rl.CheckCollisionPointRec(mouse, btn);
+    if (hover and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)) {
+        if (capture.isCalibrating()) {
+            _ = capture.endCalibration();
+            menu.calibration_start = null;
+        } else {
+            capture.beginCalibration();
+            menu.calibration_start = rl.GetTime();
+        }
+    }
+
+    const bg: rl.Color = if (capture.isCalibrating())
+        .{ .r = 80, .g = 50, .b = 50, .a = 255 }
+    else if (hover)
+        .{ .r = 60, .g = 65, .b = 80, .a = 255 }
+    else
+        .{ .r = 50, .g = 50, .b = 58, .a = 255 };
+    rl.DrawRectangleRec(btn, bg);
+    rl.DrawRectangleLinesEx(btn, 1, if (hover) rl.SKYBLUE else rl.LIGHTGRAY);
+
+    const label: [:0]const u8 = if (capture.isCalibrating()) "Stop" else "Calibrate mic";
+    const label_size: i32 = 16;
+    const label_w = rl.MeasureText(label.ptr, label_size);
+    rl.DrawText(
+        label.ptr,
+        @intFromFloat(btn.x + (btn.width - @as(f32, @floatFromInt(label_w))) * 0.5),
+        @intFromFloat(btn.y + (btn.height - @as(f32, @floatFromInt(label_size))) * 0.5),
+        label_size,
+        rl.RAYWHITE,
+    );
+
+    // Status text to the right of the button. Three modes:
+    //   - calibrating: countdown + live peak
+    //   - just finished / never run: show current reference
+    var status_buf: [96]u8 = undefined;
+    const status: [:0]const u8 = blk: {
+        if (capture.isCalibrating()) {
+            const start = menu.calibration_start orelse rl.GetTime();
+            const remaining = @max(0.0, calibration_seconds - (rl.GetTime() - start));
+            const peak = capture.calibrationPeak();
+            break :blk std.fmt.bufPrintZ(
+                &status_buf,
+                "Speak now... {d:.1}s  (peak {d:.3})",
+                .{ remaining, peak },
+            ) catch "Speak now...";
+        }
+        if (capture.calibration_ref >= 0.999 and capture.calibration_ref <= 1.001) {
+            break :blk "Not calibrated";
+        }
+        break :blk std.fmt.bufPrintZ(
+            &status_buf,
+            "Calibrated (ref {d:.3})",
+            .{capture.calibration_ref},
+        ) catch "Calibrated";
+    };
+    rl.DrawText(
+        status.ptr,
+        @intFromFloat(btn.x + btn_w + 12),
+        @intFromFloat(btn.y + (btn.height - @as(f32, @floatFromInt(label_size))) * 0.5),
+        label_size,
+        rl.LIGHTGRAY,
+    );
+
+    return y + btn_h + 16;
 }
 
 /// Debug-meter toggle. Click anywhere along the label row, not just on the
