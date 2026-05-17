@@ -76,6 +76,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("failed to init capture device: {s}\n", .{@errorName(err)});
         return err;
     };
+    capture.calibration_ref = cfg.calibration_ref;
     defer capture.deinit();
     capture.start() catch |err| {
         std.debug.print("failed to start capture device: {s}\n", .{@errorName(err)});
@@ -88,6 +89,7 @@ pub fn main(init: std.process.Init) !void {
         init.io,
         config.config_file_name,
         threshold,
+        capture.calibration_ref,
         show_debug,
         closed_slot.pathSlice(),
         open_slot.pathSlice(),
@@ -143,6 +145,6 @@ pub fn main(init: std.process.Init) !void {
         const sh: f32 = @floatFromInt(rl.GetScreenHeight());
         if (draw_tex) |tex| ui.drawAvatar(sw, sh, tex);
         if (show_debug) ui.drawDebugBar(sw, level, threshold);
-        if (menu_open) menu.draw(sw, sh, level, &threshold, &show_debug, &bg_color, &closed_slot, &open_slot);
+        if (menu_open) menu.draw(sw, sh, level, &threshold, &show_debug, &bg_color, &closed_slot, &open_slot, &capture);
     }
 }
