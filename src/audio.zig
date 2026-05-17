@@ -25,9 +25,18 @@ const ma = @cImport({
     @cInclude("miniaudio.h");
 });
 
-/// Smoothed RMS microphone level in roughly 0..1. Written from the audio
-/// thread, read from the main thread.
-var mic_level = std.atomic.Value(f32).init(0);
+/// Smoothed RMS microphone level, raw (pre-normalization). Written from the
+/// audio thread, read from the main thread. Magnitude depends entirely on
+/// the input device; see `Capture.level()` for the normalized version.
+var mic_level_raw = std.atomic.Value(f32).init(0);
+
+var calibration_active = std.atomic.Value(bool).init(false);
+var calibration_peak = std.atomic.Value(f32).init(0);
+
+/// Lower bound on the calibration reference. If a user calibrates against
+/// silence (e.g. didn't actually speak), we don't want to divide by ~0 and
+/// turn room tone into a fully-open mouth.
+const min_calibration_ref: f32 = 0.01;
 
 pub const Error = error{
     DeviceInitFailed,
@@ -59,23 +68,26 @@ fn captureCallback(
     // responsively on speech onsets, slow release so brief gaps between
     // syllables don't slam it shut. Coefficients are the weight kept from
     // the previous value per callback (~10ms at 44.1kHz / 441 frames).
-    const prev = mic_level.load(.monotonic);
+    const prev = mic_level_raw.load(.monotonic);
     const k: f32 = 0.9;
     const smoothed = prev * k + rms * (1.0 - k);
-    mic_level.store(smoothed, .monotonic);
+    mic_level_raw.store(smoothed, .monotonic);
+
+    if (calibration_active.load(.monotonic)) {
+        const peak = calibration_peak.load(.monotonic);
+        if (smoothed > peak) calibration_peak.store(smoothed, .monotonic);
+    }
 }
 
-/// Owns a miniaudio capture device. `init` configures + opens the device;
-/// `start` begins capture; `deinit` stops + closes it.
-///
-/// `init` takes an out-pointer rather than returning by value: miniaudio
-/// stores pointers back into the `ma_device` struct (including from its audio
-/// thread), so the device must not move after `ma_device_init` succeeds.
-/// Callers should declare a `Capture` at a stable address and pass `&it`.
 pub const Capture = struct {
     device: ma.ma_device,
+    /// Divisor applied to the raw smoothed RMS in `level()`. Set by
+    /// calibration so a user's normal speaking volume maps to ~1.0
+    /// regardless of mic sensitivity. Defaults to 1.0 (no normalization).
+    calibration_ref: f32 = 1.0,
 
     pub fn init(self: *Capture) Error!void {
+        self.* = .{ .device = undefined };
         var device_config = ma.ma_device_config_init(ma.ma_device_type_capture);
         device_config.capture.format = ma.ma_format_f32;
         device_config.capture.channels = 1;
@@ -97,9 +109,33 @@ pub const Capture = struct {
         ma.ma_device_uninit(&self.device);
     }
 
-    /// Latest smoothed RMS level (roughly 0..1). Cheap; safe from any thread.
     pub fn level(self: *const Capture) f32 {
+        const raw = mic_level_raw.load(.monotonic);
+        const ref = @max(self.calibration_ref, min_calibration_ref);
+        const n = raw / ref;
+        return if (n > 1.0) 1.0 else if (n < 0) 0 else n;
+    }
+
+    pub fn beginCalibration(self: *Capture) void {
         _ = self;
-        return mic_level.load(.monotonic);
+        calibration_peak.store(0, .monotonic);
+        calibration_active.store(true, .monotonic);
+    }
+
+    pub fn calibrationPeak(self: *const Capture) f32 {
+        _ = self;
+        return calibration_peak.load(.monotonic);
+    }
+
+    pub fn endCalibration(self: *Capture) f32 {
+        calibration_active.store(false, .monotonic);
+        const peak = calibration_peak.load(.monotonic);
+        if (peak >= min_calibration_ref) self.calibration_ref = peak;
+        return peak;
+    }
+
+    pub fn isCalibrating(self: *const Capture) bool {
+        _ = self;
+        return calibration_active.load(.monotonic);
     }
 };
