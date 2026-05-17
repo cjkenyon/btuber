@@ -157,7 +157,7 @@ pub const Menu = struct {
         // null-terminated stack array since raylib wants a C string and the
         // build_options slice isn't sentinel-terminated.
         var version_buf: [128]u8 = undefined;
-        const version = std.fmt.bufPrintZ(&version_buf, "v{s}", .{build_options.version}) catch "v?";
+        const version = std.fmt.bufPrintZ(&version_buf, "{s}", .{build_options.version}) catch "v?";
         const version_size: i32 = 12;
         const version_w = rl.MeasureText(version.ptr, version_size);
         rl.DrawText(
