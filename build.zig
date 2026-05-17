@@ -41,6 +41,11 @@ pub fn build(b: *std.Build) void {
         .name = "btuber",
         .root_module = exe_mod,
     });
+    // On Windows, use the GUI subsystem so launching the app doesn't pop
+    // open a console window alongside it.
+    if (target.result.os.tag == .windows) {
+        exe.subsystem = .Windows;
+    }
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);
