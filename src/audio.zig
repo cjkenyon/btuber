@@ -55,10 +55,13 @@ fn captureCallback(
     }
     const rms: f32 = @floatCast(@sqrt(sum_sq / @as(f64, @floatFromInt(total))));
 
-    // Exponential smoothing against the previous value so the level doesn't
-    // strobe on every buffer.
+    // Asymmetric exponential smoothing: fast attack so the mouth opens
+    // responsively on speech onsets, slow release so brief gaps between
+    // syllables don't slam it shut. Coefficients are the weight kept from
+    // the previous value per callback (~10ms at 44.1kHz / 441 frames).
     const prev = mic_level.load(.monotonic);
-    const smoothed = prev * 0.6 + rms * 0.4;
+    const k: f32 = 0.9;
+    const smoothed = prev * k + rms * (1.0 - k);
     mic_level.store(smoothed, .monotonic);
 }
 
